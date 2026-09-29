@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<meta name="description" content="A live Next.js compatibility ladder for Vinext, OpenNext, and Cloudflare Containers." />
+		<title>Next.js Compatibility Lab · Cloudflare</title>
+		<link
+			rel="icon"
+			href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23121916'/%3E%3Ctext x='32' y='46' text-anchor='middle' font-family='system-ui' font-weight='700' font-size='42' fill='%23f78100'%3EC%3C/text%3E%3C/svg%3E"
+		/>
+		<link rel="stylesheet" href="/styles.css" />
+	</head>
+	<body>
+		<header class="masthead">
+			<a class="wordmark" href="/" aria-label="Compatibility control plane home">
+				<span class="wordmark-mark" aria-hidden="true">C</span>
+				<span>Compatibility control plane</span>
+			</a>
+			<div class="header-meta">
+				<span class="live-dot" aria-hidden="true"></span>
+				<span id="connectionLabel">Connecting</span>
+			</div>
+		</header>
+
+		<main>
+			<section class="hero" aria-labelledby="page-title">
+				<div>
+					<p class="kicker">Next.js × Cloudflare Developer Platform</p>
+					<h1 id="page-title">One application.<br />Three ways forward.</h1>
+				</div>
+				<div class="hero-copy">
+					<p>
+						Build the original Next.js source, choose the lightest compatible runtime, and publish a verified preview. Every fallback is
+						earned by a real build and route-level smoke test.
+					</p>
+					<div class="version-strip" aria-label="Adapter versions">
+						<span>Next 16.3.3</span><span>Vinext β8</span><span>OpenNext 1.20.4</span>
+					</div>
+					<p class="demo-limits" id="demoLimits" hidden></p>
+				</div>
+			</section>
+
+			<section class="control-grid" aria-label="Compatibility demonstration">
+				<aside class="fixture-panel panel" aria-labelledby="fixtures-title">
+					<div class="panel-heading">
+						<div>
+							<p class="section-number">01</p>
+							<h2 id="fixtures-title">Choose a commit</h2>
+						</div>
+						<span class="count" id="fixtureCount">3</span>
+					</div>
+					<div id="fixtureList" class="fixture-list" aria-live="polite"></div>
+					<button class="primary-button" id="runButton" type="button" disabled>
+						<span>Run compatibility ladder</span>
+						<span aria-hidden="true">↗</span>
+					</button>
+				</aside>
+
+				<section class="pipeline-panel panel" aria-labelledby="pipeline-title">
+					<div class="panel-heading pipeline-heading">
+						<div>
+							<p class="section-number">02</p>
+							<h2 id="pipeline-title">Compatibility ladder</h2>
+						</div>
+						<span class="run-status idle" id="runStatus">Not started</span>
+					</div>
+					<ol class="stage-list" id="stageList"></ol>
+					<div class="empty-run" id="emptyRun">
+						<span class="empty-glyph" aria-hidden="true">↓</span>
+						<p>Select a controlled commit and start the ladder.</p>
+					</div>
+				</section>
+
+				<aside class="evidence-panel panel" aria-labelledby="evidence-title">
+					<div class="panel-heading">
+						<div>
+							<p class="section-number">03</p>
+							<h2 id="evidence-title">Build evidence</h2>
+						</div>
+						<button class="text-button" id="stopButton" type="button" hidden>Stop preview</button>
+					</div>
+					<div class="terminal" id="eventLog" role="log" aria-live="polite" aria-labelledby="evidence-title">
+						<p class="terminal-empty">Build output will stream here.</p>
+					</div>
+				</aside>
+			</section>
+
+			<section class="comparison-section" aria-labelledby="comparison-title">
+				<div class="story-heading">
+					<div>
+						<p class="section-number">04 / measured + modeled</p>
+						<h2 id="comparison-title">Time is observed.<br />Cost is explained.</h2>
+					</div>
+					<p id="measurementNote">Loading the comparison model.</p>
+				</div>
+
+				<div class="metric-grid">
+					<div class="metric-card">
+						<span>Queue to first build</span>
+						<strong id="queueMetric">Not measured</strong>
+						<small>Click to baseline evaluation</small>
+					</div>
+					<div class="metric-card emphasis">
+						<span>Compatibility decision</span>
+						<strong id="decisionMetric">Not measured</strong>
+						<small>Click to selected target</small>
+					</div>
+					<div class="metric-card">
+						<span>Verified preview</span>
+						<strong id="previewMetric">Not measured</strong>
+						<small>Click to route-level proof</small>
+					</div>
+					<div class="metric-card dark">
+						<span>Pipeline resource estimate</span>
+						<strong id="pipelineCostMetric">Waiting</strong>
+						<small id="pipelineCostDetail">Gross overage-rate equivalent</small>
+					</div>
+				</div>
+
+				<div class="comparison-grid">
+					<div class="comparison-table-wrap">
+						<div class="comparison-table-heading">
+							<h3>Runtime paths</h3>
+							<span id="comparisonModelLabel"></span>
+						</div>
+						<div class="table-scroll" tabindex="0" role="region" aria-label="Runtime paths comparison">
+							<table class="comparison-table">
+								<thead>
+									<tr>
+										<th scope="col">Path</th>
+										<th scope="col">Measured work</th>
+										<th scope="col">Click to decision</th>
+										<th scope="col">Reference / month</th>
+									</tr>
+								</thead>
+								<tbody id="comparisonRows"></tbody>
+							</table>
+						</div>
+					</div>
+
+					<aside class="assumption-card" aria-labelledby="assumptions-title">
+						<p class="eyebrow">Reference workload</p>
+						<h3 id="assumptions-title">One model, visible inputs.</h3>
+						<ul id="runtimeAssumptions"></ul>
+						<div class="preview-hold-cost">
+							<span>Optional 30-minute preview hold</span>
+							<strong id="previewHoldCost">Loading</strong>
+						</div>
+						<div class="estimate-boundaries">
+							<strong>Pipeline estimate boundaries</strong>
+							<p id="pipelineAssumptions"></p>
+						</div>
+						<p id="pricingNote"></p>
+					</aside>
+				</div>
+
+				<p class="pricing-sources">
+					Public rate cards:
+					<a href="https://developers.cloudflare.com/workers/platform/pricing/" target="_blank" rel="noopener noreferrer">Workers</a>,
+					<a href="https://developers.cloudflare.com/containers/platform/pricing/" target="_blank" rel="noopener noreferrer">Containers</a>,
+					<a href="https://developers.cloudflare.com/sandbox/platform/pricing/" target="_blank" rel="noopener noreferrer">Sandbox</a>, and
+					<a
+						href="https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/reference/pricing/"
+						target="_blank"
+						rel="noopener noreferrer"
+						>Workers for Platforms</a
+					>.
+				</p>
+			</section>
+
+			<section class="platform-story" aria-labelledby="platform-title">
+				<div class="platform-copy">
+					<p class="section-number">05 / platform pattern</p>
+					<h2 id="platform-title">One publisher.<br />Many isolated apps.</h2>
+					<p>
+						This separate Workers for Platforms example uploads a fixed, platform-owned User Worker with bounded metadata. It does not
+						publish a Vinext or OpenNext artifact from the compatibility ladder. A tenant registry and dispatcher control its route.
+					</p>
+					<div class="platform-actions">
+						<a class="primary-button platform-link" href="#customerEnvironments">
+							<span>Try the fixed-template publisher</span><span aria-hidden="true">↗</span>
+						</a>
+						<a
+							class="secondary-link"
+							href="https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/get-started/"
+							target="_blank"
+							rel="noopener noreferrer"
+							>Read the platform contract</a
+						>
+					</div>
+				</div>
+
+				<div class="platform-proof">
+					<div class="proof-stats">
+						<div>
+							<span>Template publication</span>
+							<strong id="platformUploadMetric">Measured per upload</strong>
+							<small id="platformObservation">Not part of the compatibility ladder</small>
+						</div>
+						<div>
+							<span>Platform reference</span>
+							<strong id="platformCostMetric">$25/mo</strong>
+							<small>100 user Workers in this model</small>
+						</div>
+					</div>
+					<ol class="platform-flow" id="platformFlow" aria-label="Fixed-template publishing flow"></ol>
+					<p class="proof-note">
+						Accepting a trusted Vinext or OpenNext server artifact would need a separate, validated publishing contract.
+					</p>
+				</div>
+
+				<aside class="emdash-card">
+					<p class="eyebrow">Live publisher</p>
+					<h3>Emdash builds. WfP ships.</h3>
+					<p>
+						An Emdash task can submit a delivery manifest. This example uploads the platform-owned template rather than the task's generated
+						source; the Electron desktop application does not run on WfP.
+					</p>
+					<a href="#customerEnvironments">Deploy a customer environment ↓</a>
+				</aside>
+			</section>
+
+			<section class="environment-lab" id="customerEnvironments" aria-labelledby="environment-title">
+				<div class="environment-intro">
+					<p class="section-number">06 / Emdash → WfP</p>
+					<h2 id="environment-title">A delivery lane<br />for every customer.</h2>
+					<p>
+						This example turns a bounded Emdash delivery manifest into a platform-owned User Worker. The control plane derives a tenant key
+						from a stable Access identity or an expiring demo visitor session, uploads into a dedicated dispatch namespace, and returns a
+						routed environment URL.
+					</p>
+					<div class="environment-guardrails" aria-label="Publisher guardrails">
+						<span>Visitor-scoped identity</span>
+						<span>Fixed Worker template</span>
+						<span>50 ms CPU limit</span>
+					</div>
+				</div>
+
+				<form class="environment-form" id="environmentForm">
+					<div class="environment-form-heading">
+						<div>
+							<p class="eyebrow">Customer manifest</p>
+							<h3>Publish from Emdash</h3>
+						</div>
+						<code>PUT → namespace</code>
+					</div>
+					<label for="environmentSlug">Environment slug</label>
+					<input
+						id="environmentSlug"
+						name="slug"
+						value="customer-preview"
+						pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
+						minlength="2"
+						maxlength="32"
+						autocomplete="off"
+						required
+					/>
+					<label for="environmentTitle">Customer title</label>
+					<input id="environmentTitle" name="title" value="Customer launch room" minlength="2" maxlength="80" required />
+					<label for="environmentDescription">Delivery note</label>
+					<textarea id="environmentDescription" name="description" minlength="2" maxlength="240" required>
+Validated in an Emdash task, then published as an isolated Workers for Platforms environment.</textarea>
+					<button class="primary-button environment-submit" id="environmentSubmit" type="submit" disabled>
+						<span>Deploy customer environment</span><span aria-hidden="true">↗</span>
+					</button>
+					<p class="environment-status" id="environmentStatus" role="status" aria-live="polite">Checking availability…</p>
+				</form>
+
+				<aside class="environment-output" aria-labelledby="environment-output-title">
+					<p class="eyebrow">Dispatch contract</p>
+					<h3 id="environment-output-title">One stable router.<br />One Worker per environment.</h3>
+					<ol>
+						<li><span>01</span>Derive a tenant key from the authenticated visitor.</li>
+						<li><span>02</span>Upload the fixed runtime plus bounded metadata.</li>
+						<li><span>03</span>Dispatch with resource and request-rate limits.</li>
+					</ol>
+					<div class="environment-result" id="environmentResult" hidden>
+						<span>Environment live</span>
+						<a id="environmentLink" target="_blank" rel="noopener noreferrer"></a>
+						<dl>
+							<div>
+								<dt>Script</dt>
+								<dd id="environmentScript"></dd>
+							</div>
+							<div>
+								<dt>Upload</dt>
+								<dd id="environmentDuration"></dd>
+							</div>
+						</dl>
+						<button class="text-button" id="environmentDelete" type="button">Delete environment</button>
+					</div>
+					<a
+						class="environment-doc-link"
+						href="https://www.emdash.sh/docs/remote-development/remote-tasks"
+						target="_blank"
+						rel="noopener noreferrer"
+						>Emdash remote task contract ↗</a
+					>
+				</aside>
+			</section>
+
+			<section class="preview-panel" id="previewPanel" hidden aria-live="polite">
+				<div class="preview-copy">
+					<p class="section-number">07 / published</p>
+					<h2>The lightest compatible target is live.</h2>
+					<p id="previewSummary"></p>
+					<a class="primary-button preview-link" id="previewLink" target="_blank" rel="noopener noreferrer">
+						<span>Open live preview</span><span aria-hidden="true">↗</span>
+					</a>
+				</div>
+				<div class="browser-frame">
+					<div class="browser-bar">
+						<span></span><span></span><span></span>
+						<code id="previewAddress"></code>
+					</div>
+					<iframe id="previewFrame" title="Published fixture preview" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>
+				</div>
+			</section>
+		</main>
+
+		<footer>
+			<p>Durable execution by Workflows. Isolated builds by Sandbox SDK. Tenant scale by Workers for Platforms.</p>
+			<p>Cloudflare Developer Platform</p>
+		</footer>
+		<script src="/app.js" defer></script>
+	</body>
+</html>

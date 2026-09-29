@@ -1,0 +1,35 @@
+{
+	"name": "nextjs-compatibility-fixture",
+	"version": "1.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"build": "next build",
+		"build:next": "next build",
+		"start:next": "next start",
+		"check:vinext": "vinext check",
+		"build:vinext": "vinext build",
+		"start:vinext": "vinext start",
+		"build:opennext": "opennextjs-cloudflare build --config wrangler.opennext.jsonc",
+		"preview:opennext": "opennextjs-cloudflare preview --config wrangler.opennext.jsonc"
+	},
+	"dependencies": {
+		"@opennextjs/cloudflare": "1.20.4",
+		"next": "16.3.3",
+		"react": "19.2.8",
+		"react-dom": "19.2.8",
+		"react-server-dom-webpack": "19.2.8",
+		"vinext": "1.0.0-beta.8"
+	},
+	"devDependencies": {
+		"@types/node": "24.7.0",
+		"@types/react": "19.2.16",
+		"@types/react-dom": "19.2.3",
+		"@vitejs/plugin-react": "6.0.0",
+		"@vitejs/plugin-rsc": "0.5.34",
+		"esbuild": "0.28.2",
+		"typescript": "5.9.3",
+		"vite": "8.2.2",
+		"wrangler": "4.143.0"
+	}
+}

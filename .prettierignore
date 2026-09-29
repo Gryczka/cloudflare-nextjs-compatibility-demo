@@ -1,0 +1,6 @@
+Dockerfile
+AGENTS.md
+public/app.client
+worker-configuration.d.ts
+fixtures/base/package-lock.json
+.vscode/settings.json

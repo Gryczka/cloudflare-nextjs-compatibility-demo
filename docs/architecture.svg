@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">Cloudflare Next.js compatibility demo architecture</title>
+  <desc id="desc">Browser or Emdash CLI reaches a control Worker. The upper lane reserves quota in a Durable Object, runs the Next.js fixture ladder in Workflows, stores run state in SQLite Durable Objects, and serves a short-lived Sandbox preview. The independent lower lane publishes a fixed template through a tenant registry and Workers for Platforms dispatch namespace.</desc>
+  <defs>
+    <marker id="arrow-amber" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L9 4.5 L0 9 Z" fill="#ba542c"/></marker>
+    <marker id="arrow-teal" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L9 4.5 L0 9 Z" fill="#178277"/></marker>
+    <filter id="shadow" x="-15%" y="-20%" width="130%" height="145%"><feDropShadow dx="0" dy="9" stdDeviation="12" flood-color="#242625" flood-opacity="0.08"/></filter>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #263030; }
+      .title { font-size: 32px; font-weight: 750; letter-spacing: -0.03em; }
+      .intro { font-size: 15px; fill: #5a6462; }
+      .eyebrow { font-size: 12px; font-weight: 750; letter-spacing: 0.11em; }
+      .lane-title { font-size: 21px; font-weight: 700; letter-spacing: -0.02em; }
+      .node-title { font-size: 17px; font-weight: 700; }
+      .node-note { font-size: 13px; fill: #56615e; }
+      .small { font-size: 13px; fill: #46504e; }
+      .footer { font-size: 13px; fill: #68716e; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="720" fill="#f6f5f0"/>
+  <circle cx="1178" cy="64" r="132" fill="#efeee8"/>
+  <text class="eyebrow" x="50" y="40" fill="#ba542c">REFERENCE ARCHITECTURE</text>
+  <text class="title" x="50" y="79">One control plane. Two bounded paths.</text>
+  <text class="intro" x="50" y="107">Measured fixture compatibility above; independent fixed-template publishing below.</text>
+
+  <rect x="626" y="146" width="606" height="239" rx="24" fill="#fcf3eb" stroke="#ead7c9" stroke-width="2"/>
+  <text class="eyebrow" x="651" y="177" fill="#ba542c">A / FIXTURE LADDER</text>
+  <text class="lane-title" x="651" y="204">Native Next.js → Vinext → OpenNext → Container</text>
+
+  <rect x="626" y="410" width="606" height="247" rx="24" fill="#eaf5f1" stroke="#c6dfd7" stroke-width="2"/>
+  <text class="eyebrow" x="651" y="442" fill="#178277">B / SEPARATE WFP EXAMPLE</text>
+  <text class="lane-title" x="651" y="469">Only the platform-owned Worker template is uploaded</text>
+
+  <path d="M284 358 H322" stroke="#3b4743" stroke-width="3" marker-end="url(#arrow-amber)"/>
+  <path d="M606 330 H617 V258 H647" fill="none" stroke="#ba542c" stroke-width="3" marker-end="url(#arrow-amber)"/>
+  <path d="M606 407 H617 V529 H647" fill="none" stroke="#178277" stroke-width="3" marker-end="url(#arrow-teal)"/>
+  <path d="M820 258 H845" stroke="#ba542c" stroke-width="3" marker-end="url(#arrow-amber)"/>
+  <path d="M1018 258 H1043" stroke="#ba542c" stroke-width="3" marker-end="url(#arrow-amber)"/>
+  <path d="M820 529 H845" stroke="#178277" stroke-width="3" marker-end="url(#arrow-teal)"/>
+  <path d="M1018 529 H1043" stroke="#178277" stroke-width="3" marker-end="url(#arrow-teal)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="50" y="309" width="234" height="100" rx="16" fill="#ffffff" stroke="#d9dcd6"/>
+    <rect x="323" y="285" width="283" height="153" rx="19" fill="#26312e"/>
+    <rect x="647" y="223" width="173" height="83" rx="13" fill="#ffffff" stroke="#e6d9cc"/>
+    <rect x="845" y="223" width="173" height="83" rx="13" fill="#ffffff" stroke="#e6d9cc"/>
+    <rect x="1043" y="223" width="165" height="83" rx="13" fill="#ffffff" stroke="#e6d9cc"/>
+    <rect x="647" y="496" width="173" height="83" rx="13" fill="#ffffff" stroke="#cbded6"/>
+    <rect x="845" y="496" width="173" height="83" rx="13" fill="#ffffff" stroke="#cbded6"/>
+    <rect x="1043" y="496" width="165" height="83" rx="13" fill="#ffffff" stroke="#cbded6"/>
+  </g>
+
+  <text class="eyebrow" x="70" y="338" fill="#787c76">INPUT</text>
+  <text class="node-title" x="70" y="364">Browser / Emdash CLI</text>
+  <text class="node-note" x="70" y="389">Own session or Access token</text>
+
+  <text x="346" y="326" font-size="12" font-weight="700" letter-spacing="0.11em" fill="#ffbf97">CLOUDFLARE WORKER</text>
+  <text x="346" y="358" font-size="22" font-weight="730" fill="#ffffff">Control plane</text>
+  <text x="346" y="386" font-size="13" fill="#d6e1db">Authentication · API · proxy</text>
+  <text x="346" y="412" font-size="13" fill="#d6e1db">Same-origin, owner-scoped routes</text>
+
+  <text class="node-title" x="661" y="253">Quota coordinator</text>
+  <text class="node-note" x="661" y="276">SQLite Durable Object</text>
+  <text class="node-title" x="859" y="253">Workflow + run DO</text>
+  <text class="node-note" x="859" y="276">Retries + event log</text>
+  <text class="node-title" x="1057" y="253">Sandbox</text>
+  <text class="node-note" x="1057" y="276">Container builds</text>
+  <text class="small" x="651" y="346">First verified target → owner-scoped preview through the Worker → automatic expiry</text>
+
+  <text class="node-title" x="661" y="526">Tenant registry</text>
+  <text class="node-note" x="661" y="550">Fenced SQLite DO</text>
+  <text class="node-title" x="859" y="526">WfP upload API</text>
+  <text class="node-note" x="859" y="550">Bounded metadata</text>
+  <text class="node-title" x="1057" y="526">User Worker</text>
+  <text class="node-note" x="1057" y="550">Dispatch namespace</text>
+  <text class="small" x="651" y="619">Owner-only dispatch · no ladder artifact handoff · deletion on expiry</text>
+
+  <text class="footer" x="50" y="691">D1, R2, and Analytics Engine bindings scaffold disabled upload/telemetry prototypes; they are not on the live fixture path.</text>
+</svg>

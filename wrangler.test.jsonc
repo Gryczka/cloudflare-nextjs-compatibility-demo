@@ -1,0 +1,87 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "cloudflare-nextjs-compatibility-demo-test",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-09-26",
+	"compatibility_flags": ["nodejs_compat"],
+	"rules": [
+		{
+			"type": "Text",
+			"globs": ["**/*.html", "**/*.css", "**/*.client"],
+			"fallthrough": true,
+		},
+	],
+	"vars": {
+		"REQUIRE_ACCESS": "false",
+		"PUBLIC_DEMO": "false",
+		"DEMO_MUTATIONS_ENABLED": "false",
+		"UPLOADS_ENABLED": "false",
+		"PUBLISHING_ENABLED": "false",
+	},
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "RUNS",
+				"class_name": "RunDurableObject",
+			},
+			{
+				"name": "UPLOAD_RUNS",
+				"class_name": "UploadRunDurableObject",
+			},
+			{
+				"name": "BUILD_CAPACITY",
+				"class_name": "CapacityDurableObject",
+			},
+			{
+				"name": "SITE_REGISTRIES",
+				"class_name": "SiteRegistry",
+			},
+			{
+				"name": "ENVIRONMENT_REGISTRIES",
+				"class_name": "EnvironmentRegistry",
+			},
+			{
+				"name": "DEMO_COORDINATOR",
+				"class_name": "PublicDemoCoordinator",
+			},
+		],
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["RunDurableObject"],
+		},
+		{
+			"tag": "v2",
+			"new_sqlite_classes": ["EnvironmentRegistry"],
+		},
+		{
+			"tag": "v3",
+			"new_sqlite_classes": ["UploadRunDurableObject", "CapacityDurableObject", "SiteRegistry"],
+		},
+		{
+			"tag": "v4",
+			"new_sqlite_classes": ["PublicDemoCoordinator"],
+		},
+	],
+	"r2_buckets": [
+		{
+			"binding": "PIPELINE_ARTIFACTS",
+			"bucket_name": "cloudflare-nextjs-compatibility-artifacts",
+		},
+	],
+	"d1_databases": [
+		{
+			"binding": "PIPELINE_DB",
+			"database_name": "cloudflare-nextjs-compatibility-demo",
+			"database_id": "00000000-0000-0000-0000-000000000000",
+			"migrations_dir": "migrations",
+		},
+	],
+	"analytics_engine_datasets": [
+		{
+			"binding": "PIPELINE_ANALYTICS",
+			"dataset": "nextjs_compatibility_demo_test",
+		},
+	],
+}

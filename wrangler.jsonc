@@ -1,0 +1,139 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "cloudflare-nextjs-compatibility-demo",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-09-26",
+	"compatibility_flags": ["nodejs_compat"],
+	"workers_dev": true,
+	"rules": [
+		{
+			"type": "Text",
+			"globs": ["**/*.html", "**/*.css", "**/*.client"],
+			"fallthrough": true,
+		},
+	],
+	"vars": {
+		"REQUIRE_ACCESS": "true",
+		"CLOUDFLARE_ACCOUNT_ID": "REPLACE_WITH_YOUR_ACCOUNT_ID",
+		"WFP_DISPATCH_NAMESPACE": "nextjs-compatibility-environments",
+		"PUBLIC_DEMO": "false",
+		"DEMO_MUTATIONS_ENABLED": "false",
+		"UPLOADS_ENABLED": "false",
+		"PUBLISHING_ENABLED": "false",
+	},
+	"access": {
+		"dev": {
+			"aud": "nextjs-compatibility-local",
+			"identity": {
+				"email": "developer@local.test",
+				"name": "Local developer",
+				"user_uuid": "local-developer",
+			},
+		},
+	},
+	"workflows": [
+		{
+			"binding": "COMPATIBILITY_WORKFLOW",
+			"name": "cloudflare-nextjs-compatibility-demo",
+			"class_name": "CompatibilityWorkflow",
+			"default_retention": {
+				"success_retention": "7 days",
+				"error_retention": "7 days",
+			},
+		},
+	],
+	"dispatch_namespaces": [
+		{
+			"binding": "EMDASH_ENVIRONMENTS",
+			"namespace": "nextjs-compatibility-environments",
+		},
+	],
+	"containers": [
+		{
+			"class_name": "Sandbox",
+			"image": "./Dockerfile",
+			"instance_type": "standard-1",
+			"max_instances": 3,
+			"rollout_step_percentage": 100,
+		},
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "RUNS",
+				"class_name": "RunDurableObject",
+			},
+			{
+				"name": "UPLOAD_RUNS",
+				"class_name": "UploadRunDurableObject",
+			},
+			{
+				"name": "BUILD_CAPACITY",
+				"class_name": "CapacityDurableObject",
+			},
+			{
+				"name": "SITE_REGISTRIES",
+				"class_name": "SiteRegistry",
+			},
+			{
+				"name": "ENVIRONMENT_REGISTRIES",
+				"class_name": "EnvironmentRegistry",
+			},
+			{
+				"name": "DEMO_COORDINATOR",
+				"class_name": "PublicDemoCoordinator",
+			},
+			{
+				"name": "Sandbox",
+				"class_name": "Sandbox",
+			},
+		],
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["RunDurableObject", "Sandbox"],
+		},
+		{
+			"tag": "v2",
+			"new_sqlite_classes": ["EnvironmentRegistry"],
+		},
+		{
+			"tag": "v3",
+			"new_sqlite_classes": ["UploadRunDurableObject", "CapacityDurableObject", "SiteRegistry"],
+		},
+		{
+			"tag": "v4",
+			"new_sqlite_classes": ["PublicDemoCoordinator"],
+		},
+	],
+	"r2_buckets": [
+		{
+			"binding": "PIPELINE_ARTIFACTS",
+			"bucket_name": "cloudflare-nextjs-compatibility-artifacts",
+		},
+	],
+	"d1_databases": [
+		{
+			"binding": "PIPELINE_DB",
+			"database_name": "cloudflare-nextjs-compatibility-demo",
+			"database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
+			"migrations_dir": "migrations",
+		},
+	],
+	"analytics_engine_datasets": [
+		{
+			"binding": "PIPELINE_ANALYTICS",
+			"dataset": "nextjs_compatibility_demo",
+		},
+	],
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1,
+		"logs": {
+			"enabled": true,
+			"invocation_logs": true,
+			"head_sampling_rate": 1,
+		},
+	},
+}

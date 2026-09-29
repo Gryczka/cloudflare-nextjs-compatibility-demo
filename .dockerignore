@@ -1,0 +1,12 @@
+**/.next
+**/.open-next
+**/.wrangler
+**/dist
+**/node_modules
+.git
+coverage
+.dev.vars*
+.env*
+wrangler.local*.jsonc
+**/*.pem
+**/*.key

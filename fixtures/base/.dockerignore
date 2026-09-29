@@ -1,0 +1,5 @@
+*
+!.next/standalone/**
+!.next/static/**
+!public/**
+!Dockerfile.runtime

@@ -1,0 +1,783 @@
+/** Browser control plane: per-session fixture runs, bounded event rendering,
+ * and a separate fixed-template environment form. The server owns all identity.
+ */
+const stageOrder = ["baseline", "vinext", "opennext", "container", "publish"];
+const stageNumbers = {
+	baseline: "N",
+	vinext: "V",
+	opennext: "O",
+	container: "C",
+	publish: "↗",
+};
+
+let fixtures = [];
+let selectedFixtureId = "vinext";
+let currentRun = null;
+let currentComparison = null;
+let events = [];
+const knownEventSequences = new Set();
+const renderedEventSequences = new Set();
+const maxEventHistory = 2_000;
+const maxRenderedEvents = 500;
+const cleanupRetryDelays = [0, 500, 1_500];
+const cleanupRequestTimeoutMs = 25_000;
+let eventCursor = 0;
+let eventFloor = 0;
+let socket = null;
+let pollTimer = null;
+let pollController = null;
+let renderFrame = null;
+let renderedPreviewPath = null;
+let runGeneration = 0;
+let actionPending = false;
+let environmentActionPending = false;
+let currentEnvironment = null;
+let demoMutationsEnabled = true;
+let publishingAvailable = true;
+
+const elements = {
+	connectionLabel: document.querySelector("#connectionLabel"),
+	connectionDot: document.querySelector(".live-dot"),
+	fixtureCount: document.querySelector("#fixtureCount"),
+	fixtureList: document.querySelector("#fixtureList"),
+	demoLimits: document.querySelector("#demoLimits"),
+	runButton: document.querySelector("#runButton"),
+	runStatus: document.querySelector("#runStatus"),
+	stageList: document.querySelector("#stageList"),
+	emptyRun: document.querySelector("#emptyRun"),
+	eventLog: document.querySelector("#eventLog"),
+	stopButton: document.querySelector("#stopButton"),
+	previewPanel: document.querySelector("#previewPanel"),
+	previewSummary: document.querySelector("#previewSummary"),
+	previewLink: document.querySelector("#previewLink"),
+	previewAddress: document.querySelector("#previewAddress"),
+	previewFrame: document.querySelector("#previewFrame"),
+	measurementNote: document.querySelector("#measurementNote"),
+	queueMetric: document.querySelector("#queueMetric"),
+	decisionMetric: document.querySelector("#decisionMetric"),
+	previewMetric: document.querySelector("#previewMetric"),
+	pipelineCostMetric: document.querySelector("#pipelineCostMetric"),
+	pipelineCostDetail: document.querySelector("#pipelineCostDetail"),
+	comparisonModelLabel: document.querySelector("#comparisonModelLabel"),
+	comparisonRows: document.querySelector("#comparisonRows"),
+	runtimeAssumptions: document.querySelector("#runtimeAssumptions"),
+	previewHoldCost: document.querySelector("#previewHoldCost"),
+	pricingNote: document.querySelector("#pricingNote"),
+	platformUploadMetric: document.querySelector("#platformUploadMetric"),
+	platformObservation: document.querySelector("#platformObservation"),
+	platformCostMetric: document.querySelector("#platformCostMetric"),
+	platformFlow: document.querySelector("#platformFlow"),
+	pipelineAssumptions: document.querySelector("#pipelineAssumptions"),
+	environmentForm: document.querySelector("#environmentForm"),
+	environmentSlug: document.querySelector("#environmentSlug"),
+	environmentTitle: document.querySelector("#environmentTitle"),
+	environmentDescription: document.querySelector("#environmentDescription"),
+	environmentSubmit: document.querySelector("#environmentSubmit"),
+	environmentStatus: document.querySelector("#environmentStatus"),
+	environmentResult: document.querySelector("#environmentResult"),
+	environmentLink: document.querySelector("#environmentLink"),
+	environmentScript: document.querySelector("#environmentScript"),
+	environmentDuration: document.querySelector("#environmentDuration"),
+	environmentDelete: document.querySelector("#environmentDelete"),
+};
+
+elements.runButton.addEventListener("click", startRun);
+elements.stopButton.addEventListener("click", stopRun);
+elements.environmentForm.addEventListener("submit", deployCustomerEnvironment);
+elements.environmentDelete.addEventListener("click", removeCustomerEnvironment);
+
+loadFixtures().catch(showFatalError);
+renderStages();
+renderComparison();
+
+async function loadFixtures() {
+	const session = await fetch("/api/session");
+	if (session.ok) {
+		const { limits, mutationsEnabled, publishingAvailable: canPublish } = await session.json();
+		demoMutationsEnabled = mutationsEnabled === true;
+		publishingAvailable = demoMutationsEnabled && canPublish === true;
+		elements.demoLimits.textContent = `Public demo · ${limits.runsPerSessionHour} runs per visitor/hour · ${limits.activeRuns} concurrent builds · 30-minute previews · ${limits.environmentsPerSession} published environment per visitor for 30 minutes.${demoMutationsEnabled ? "" : " New runs and publications are paused."}`;
+		elements.demoLimits.hidden = false;
+		if (!publishingAvailable) {
+			showEnvironmentStatus(
+				demoMutationsEnabled ? "Publishing is unavailable until the server-side credential is configured." : "New demo publications are paused.",
+			);
+		}
+	}
+	const response = await fetch("/api/fixtures");
+	if (!response.ok) throw new Error("Could not load compatibility fixtures");
+	const body = await response.json();
+	fixtures = body.fixtures;
+	currentComparison = body.comparison;
+	elements.fixtureCount.textContent = String(fixtures.length);
+	elements.connectionLabel.textContent = demoMutationsEnabled ? "Ready" : "Demo paused";
+	elements.connectionDot.classList.add(demoMutationsEnabled ? "ready" : "paused");
+	elements.runButton.disabled = !demoMutationsEnabled;
+	elements.runButton.querySelector("span").textContent = demoMutationsEnabled ? "Run compatibility ladder" : "New runs paused";
+	setEnvironmentBusy(false, "Deploy customer environment");
+	if (publishingAvailable) showEnvironmentStatus("Ready to publish.");
+	renderFixtures();
+	renderComparison();
+}
+
+async function deployCustomerEnvironment(event) {
+	event.preventDefault();
+	if (environmentActionPending) return;
+	environmentActionPending = true;
+	setEnvironmentBusy(true, "Deploying User Worker…");
+	showEnvironmentStatus("Uploading the customer environment to the isolated dispatch namespace.");
+
+	try {
+		const response = await fetch("/api/wfp/environments", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				slug: elements.environmentSlug.value.trim(),
+				title: elements.environmentTitle.value.trim(),
+				description: elements.environmentDescription.value.trim(),
+			}),
+		});
+		const body = await response.json().catch(() => null);
+		if (!response.ok) {
+			const retryAfter = response.headers.get("Retry-After");
+			throw new Error(`${body?.error ?? "Could not deploy the customer environment"}${retryAfter ? ` Retry after ${retryAfter}s.` : ""}`);
+		}
+
+		currentEnvironment = body.environment;
+		elements.environmentLink.href = currentEnvironment.url;
+		elements.environmentLink.textContent = currentEnvironment.path;
+		elements.environmentScript.textContent = currentEnvironment.scriptName;
+		elements.environmentDuration.textContent = formatDuration(currentEnvironment.durationMs);
+		elements.environmentResult.hidden = false;
+		showEnvironmentStatus(
+			currentEnvironment.expiresAt
+				? `Environment uploaded. Automatic deletion is scheduled for ${new Date(currentEnvironment.expiresAt).toLocaleTimeString()}. Updates can take time to appear at the dispatch URL.`
+				: "Environment uploaded. Updates can take time to appear at the dispatch URL.",
+			"success",
+		);
+	} catch (error) {
+		showEnvironmentStatus(error instanceof Error ? error.message : String(error), "error");
+	} finally {
+		environmentActionPending = false;
+		setEnvironmentBusy(false, "Deploy customer environment");
+	}
+}
+
+async function removeCustomerEnvironment() {
+	if (!currentEnvironment || environmentActionPending) return;
+	environmentActionPending = true;
+	setEnvironmentBusy(true, "Deleting environment…");
+	showEnvironmentStatus("Removing the User Worker from the dispatch namespace.");
+
+	try {
+		const response = await fetch(`/api/wfp/environments/${encodeURIComponent(currentEnvironment.slug)}`, { method: "DELETE" });
+		const body = await response.json().catch(() => null);
+		if (!response.ok) {
+			const retryAfter = response.headers.get("Retry-After");
+			throw new Error(`${body?.error ?? "Could not delete the customer environment"}${retryAfter ? ` Retry after ${retryAfter}s.` : ""}`);
+		}
+		currentEnvironment = null;
+		elements.environmentResult.hidden = true;
+		showEnvironmentStatus("Environment deleted. The stable dispatcher now returns not found.", "success");
+	} catch (error) {
+		showEnvironmentStatus(error instanceof Error ? error.message : String(error), "error");
+	} finally {
+		environmentActionPending = false;
+		setEnvironmentBusy(false, "Deploy customer environment");
+	}
+}
+
+function setEnvironmentBusy(busy, label) {
+	elements.environmentSubmit.disabled = busy || !publishingAvailable;
+	elements.environmentDelete.disabled = busy;
+	elements.environmentSubmit.querySelector("span").textContent = !busy && !publishingAvailable ? "Publishing unavailable" : label;
+}
+
+function showEnvironmentStatus(message, state = "") {
+	elements.environmentStatus.className = `environment-status${state ? ` ${state}` : ""}`;
+	elements.environmentStatus.textContent = message;
+}
+
+function renderFixtures() {
+	elements.fixtureList.replaceChildren(
+		...fixtures.map((fixture) => {
+			const button = document.createElement("button");
+			button.type = "button";
+			button.dataset.fixtureId = fixture.id;
+			button.className = `fixture-card${fixture.id === selectedFixtureId ? " selected" : ""}`;
+			button.setAttribute("aria-pressed", String(fixture.id === selectedFixtureId));
+			button.innerHTML = `
+				<span class="fixture-card-top"><span>${escapeHtml(fixture.commit)}</span><span>→ ${escapeHtml(fixture.expectedTarget)}</span></span>
+				<h3>${escapeHtml(fixture.name)}</h3>
+				<p>${escapeHtml(fixture.description)}</p>
+				<code class="fixture-change">${escapeHtml(fixture.change)}</code>
+			`;
+			button.addEventListener("click", () => {
+				selectedFixtureId = fixture.id;
+				updateFixtureSelection();
+			});
+			return button;
+		}),
+	);
+}
+
+function updateFixtureSelection() {
+	for (const button of elements.fixtureList.querySelectorAll(".fixture-card")) {
+		const selected = button.dataset.fixtureId === selectedFixtureId;
+		button.classList.toggle("selected", selected);
+		button.setAttribute("aria-pressed", String(selected));
+	}
+}
+
+async function startRun() {
+	if (actionPending) return;
+	actionPending = true;
+	const generation = ++runGeneration;
+	let failed = false;
+	elements.runButton.disabled = true;
+	elements.runButton.querySelector("span").textContent = "Starting workflow…";
+
+	try {
+		if (shouldCleanupBeforeStarting(currentRun)) {
+			elements.runButton.querySelector("span").textContent = "Cleaning previous preview…";
+			const cleanup = await requestRunCleanup(currentRun.id);
+			if (generation !== runGeneration) return;
+			applyRunPayload(cleanup);
+			if (currentRun?.sandboxDestroyedAt === null) throw new Error("Previous Sandbox cleanup is still pending");
+		}
+		if (generation !== runGeneration) return;
+		disconnect();
+		currentRun = null;
+		events = [];
+		knownEventSequences.clear();
+		renderedEventSequences.clear();
+		eventCursor = 0;
+		eventFloor = 0;
+		renderedPreviewPath = null;
+		elements.runButton.querySelector("span").textContent = "Starting workflow…";
+		elements.eventLog.innerHTML = '<p class="terminal-empty">Creating durable workflow instance…</p>';
+		elements.previewPanel.hidden = true;
+		elements.stopButton.hidden = true;
+		renderStages();
+
+		const response = await fetch("/api/runs", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ fixtureId: selectedFixtureId }),
+		});
+		const body = await response.json();
+		if (!response.ok) {
+			const retryAfter = response.headers.get("Retry-After");
+			throw new Error(`${body.error ?? "Could not start run"}${retryAfter ? ` Retry after ${retryAfter}s.` : ""}`);
+		}
+		if (generation !== runGeneration) return;
+		applyRunPayload(body);
+		elements.stopButton.hidden = false;
+		renderRun();
+		connectWebSocket();
+		startPolling();
+	} catch (error) {
+		failed = true;
+		showFatalError(error);
+	} finally {
+		if (generation === runGeneration) {
+			actionPending = false;
+			if (failed) resetRunButton();
+		}
+	}
+}
+
+function connectWebSocket() {
+	if (!currentRun) return;
+	const runId = currentRun.id;
+	const generation = runGeneration;
+	const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+	const nextSocket = new WebSocket(`${protocol}//${location.host}/api/runs/${runId}/ws`);
+	socket = nextSocket;
+	elements.connectionLabel.textContent = "Connecting";
+	nextSocket.addEventListener("open", () => {
+		if (!isCurrentRun(runId, generation, nextSocket)) return;
+		elements.connectionLabel.textContent = "Live events";
+	});
+	nextSocket.addEventListener("message", (message) => {
+		if (!isCurrentRun(runId, generation, nextSocket)) return;
+		if (message.data === "pong") return;
+		const payload = JSON.parse(message.data);
+		if (payload.type === "snapshot") {
+			applyRunPayload({ run: payload.snapshot, comparison: payload.comparison });
+			mergeEvents(payload.events);
+			eventCursor = Math.max(eventCursor, Number(payload.nextAfter) || 0);
+		} else if (payload.type === "event") {
+			applyRunPayload({ run: payload.snapshot, comparison: payload.comparison });
+			mergeEvents([payload.event]);
+		}
+		scheduleRenderRun();
+	});
+	nextSocket.addEventListener("close", () => {
+		if (!isCurrentRun(runId, generation, nextSocket)) return;
+		socket = null;
+		elements.connectionLabel.textContent = isCleanupPending(currentRun)
+			? "Releasing Sandbox"
+			: isTerminal(currentRun?.status)
+				? "Run complete"
+				: "Polling";
+		if (shouldPoll(currentRun) && !pollTimer) startPolling();
+	});
+	nextSocket.addEventListener("error", () => {
+		if (!isCurrentRun(runId, generation, nextSocket)) return;
+		elements.connectionLabel.textContent = "Polling";
+	});
+}
+
+function startPolling() {
+	if (!currentRun || pollTimer) return;
+	const runId = currentRun.id;
+	const generation = runGeneration;
+	const poll = async () => {
+		if (!isCurrentRun(runId, generation) || !shouldPoll(currentRun)) {
+			pollTimer = null;
+			return;
+		}
+		const controller = new AbortController();
+		pollController = controller;
+		try {
+			const runResponse = await fetch(`/api/runs/${runId}`, { signal: controller.signal });
+			if (!isCurrentRun(runId, generation)) return;
+			if (runResponse.ok) applyRunPayload(await runResponse.json());
+			await drainEvents(runId, generation, controller.signal);
+			if (!isCurrentRun(runId, generation)) return;
+			renderRun();
+		} catch (error) {
+			if (error?.name === "AbortError") return;
+			elements.connectionLabel.textContent = "Reconnecting";
+		} finally {
+			if (pollController === controller) pollController = null;
+			if (isCurrentRun(runId, generation) && shouldPoll(currentRun)) {
+				pollTimer = window.setTimeout(poll, currentRun.status === "succeeded" ? 10_000 : 1_500);
+			} else {
+				pollTimer = null;
+			}
+		}
+	};
+	pollTimer = window.setTimeout(poll, 1_500);
+}
+
+async function stopRun() {
+	if (!currentRun || actionPending) return;
+	actionPending = true;
+	const runId = currentRun.id;
+	const generation = runGeneration;
+	elements.stopButton.disabled = true;
+	try {
+		const cleanup = await requestRunCleanup(runId);
+		if (!isCurrentRun(runId, generation)) return;
+		applyRunPayload(cleanup);
+		renderRun();
+	} catch (error) {
+		if (isCurrentRun(runId, generation)) showFatalError(error);
+	} finally {
+		if (generation === runGeneration) {
+			actionPending = false;
+			elements.stopButton.disabled = false;
+			if (isTerminal(currentRun?.status)) resetRunButton();
+		}
+	}
+}
+
+async function requestRunCleanup(runId) {
+	let lastError = new Error("Could not clean up the run");
+	for (const delay of cleanupRetryDelays) {
+		if (delay > 0) {
+			elements.connectionLabel.textContent = "Retrying cleanup";
+			await new Promise((resolve) => window.setTimeout(resolve, delay));
+		}
+		const controller = new AbortController();
+		const timeout = window.setTimeout(() => controller.abort(), cleanupRequestTimeoutMs);
+		try {
+			const response = await fetch(`/api/runs/${runId}`, { method: "DELETE", signal: controller.signal });
+			const body = await response.json().catch(() => null);
+			if (response.ok) return body;
+			lastError = new Error(body?.error ?? "Could not clean up the run");
+		} catch (error) {
+			lastError = error?.name === "AbortError" ? new Error("Sandbox cleanup timed out") : error;
+		} finally {
+			window.clearTimeout(timeout);
+		}
+	}
+	throw lastError;
+}
+
+function renderRun() {
+	if (!currentRun) return;
+	elements.runStatus.className = `run-status ${currentRun.status}`;
+	elements.runStatus.textContent = formatStatus(currentRun.status);
+	elements.emptyRun.hidden = true;
+	renderStages();
+	renderEvents();
+	renderComparison();
+
+	if (isTerminal(currentRun.status)) {
+		resetRunButton();
+		elements.connectionLabel.textContent = isCleanupPending(currentRun) ? "Releasing Sandbox" : "Run complete";
+	}
+
+	if (currentRun.status === "succeeded" && currentRun.previewPath) {
+		const previewChanged = renderedPreviewPath !== currentRun.previewPath;
+		const fixture = fixtures.find((item) => item.id === currentRun.fixtureId);
+		elements.previewSummary.textContent = `${fixture?.name ?? "Application"} landed on ${formatTarget(currentRun.selectedTarget)} after every earlier target was measured.`;
+		elements.previewLink.href = currentRun.previewPath;
+		elements.previewAddress.textContent = `${location.host}${currentRun.previewPath}`;
+		if (elements.previewFrame.src !== new URL(currentRun.previewPath, location.href).href) {
+				elements.previewFrame.src = currentRun.previewPath;
+			}
+		elements.previewPanel.hidden = false;
+		renderedPreviewPath = currentRun.previewPath;
+		if (previewChanged) elements.previewPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+	} else {
+		renderedPreviewPath = null;
+		elements.previewPanel.hidden = true;
+		elements.previewFrame.removeAttribute("src");
+	}
+}
+
+function applyRunPayload(payload) {
+	const previousRunId = currentRun?.id;
+	const accepted = applySnapshot(payload?.run);
+	if (
+		accepted &&
+		payload?.comparison &&
+		(previousRunId !== payload.run?.id || shouldAcceptComparison(payload.comparison, currentComparison))
+	) {
+		currentComparison = payload.comparison;
+	}
+}
+
+function shouldAcceptComparison(incoming, current) {
+	if (!current) return true;
+	const incomingRevision = incoming.snapshotRevision;
+	const currentRevision = current.snapshotRevision;
+	if (Number.isInteger(incomingRevision) && Number.isInteger(currentRevision) && incomingRevision !== currentRevision) {
+		return incomingRevision > currentRevision;
+	}
+	const incomingTime = Date.parse(incoming.generatedAt);
+	const currentTime = Date.parse(current.generatedAt);
+	return Number.isFinite(incomingTime) && (!Number.isFinite(currentTime) || incomingTime >= currentTime);
+}
+
+function applySnapshot(snapshot) {
+	if (!snapshot || (currentRun && snapshot.id !== currentRun.id)) return false;
+	if (currentRun) {
+		const incomingRevision = Number(snapshot.revision);
+		const currentRevision = Number(currentRun.revision);
+		const accepted =
+			Number.isInteger(incomingRevision) && Number.isInteger(currentRevision)
+				? incomingRevision >= currentRevision
+				: new Date(snapshot.updatedAt) >= new Date(currentRun.updatedAt);
+		if (!accepted) return false;
+	}
+	currentRun = snapshot;
+	return true;
+}
+
+function mergeEvents(incoming) {
+	for (const event of incoming) {
+		if (event.seq > eventFloor && !knownEventSequences.has(event.seq)) {
+			knownEventSequences.add(event.seq);
+			if (events.length === 0 || events.at(-1).seq < event.seq) {
+				events.push(event);
+			} else {
+				let low = 0;
+				let high = events.length;
+				while (low < high) {
+					const middle = Math.floor((low + high) / 2);
+					if (events[middle].seq < event.seq) low = middle + 1;
+					else high = middle;
+				}
+				events.splice(low, 0, event);
+			}
+		}
+	}
+	if (events.length > maxEventHistory) {
+		const removed = events.splice(0, events.length - maxEventHistory);
+		for (const event of removed) knownEventSequences.delete(event.seq);
+		eventFloor = Math.max(eventFloor, removed.at(-1)?.seq ?? 0);
+	}
+}
+
+async function drainEvents(runId, generation, signal) {
+	let hasMore = true;
+	while (hasMore && isCurrentRun(runId, generation)) {
+		const response = await fetch(`/api/runs/${runId}/events?after=${eventCursor}`, { signal });
+		if (!response.ok) return;
+		const page = await response.json();
+		if (!isCurrentRun(runId, generation)) return;
+		mergeEvents(page.events);
+		const nextAfter = Number(page.nextAfter) || eventCursor;
+		hasMore = Boolean(page.hasMore);
+		if (hasMore && nextAfter <= eventCursor) throw new Error("Event pagination did not advance");
+		eventCursor = Math.max(eventCursor, nextAfter);
+	}
+}
+
+function scheduleRenderRun() {
+	if (renderFrame !== null) return;
+	renderFrame = window.requestAnimationFrame(() => {
+		renderFrame = null;
+		renderRun();
+	});
+}
+
+function renderStages() {
+	const fallbackStages = {
+		baseline: { label: "Next.js baseline", summary: "Build the unmodified source first." },
+		vinext: { label: "Vinext", summary: "Check, compile, and smoke-test the Vite path." },
+		opennext: { label: "OpenNext", summary: "Preserve Next.js compilation, then test workerd." },
+		container: { label: "Container", summary: "Build standalone output and test full Node.js." },
+		publish: { label: "Live preview", summary: "Keep only the first verified target running." },
+	};
+
+	elements.stageList.replaceChildren(
+		...stageOrder.map((name) => {
+			const stage = currentRun?.stages?.[name] ?? {
+				...fallbackStages[name],
+				name,
+				status: "pending",
+				checks: [],
+			};
+			const item = document.createElement("li");
+			item.className = `stage-item ${stage.status}`;
+			const measuredDuration = stage.durationMs == null ? "" : `<small class="stage-duration">${formatDuration(stage.durationMs)} measured</small>`;
+			const checks = stage.checks
+				.map(
+					(check) => `
+						<div class="check ${escapeHtml(check.status)}" title="${escapeHtml(check.detail)}">
+							<span class="check-dot"></span><span>${escapeHtml(check.name)}</span><span>${formatDuration(check.durationMs)}</span>
+						</div>`,
+				)
+				.join("");
+			item.innerHTML = `
+				<span class="stage-marker">${stage.status === "passed" ? "✓" : stageNumbers[name]}</span>
+				<div class="stage-copy">
+					<h3>${escapeHtml(stage.label)}</h3>
+					<p>${escapeHtml(stage.summary ?? fallbackStages[name].summary)}</p>
+					${checks ? `<div class="check-list">${checks}</div>` : ""}
+				</div>
+				<span class="stage-state">${escapeHtml(stage.status)}${measuredDuration}</span>
+			`;
+			return item;
+		}),
+	);
+}
+
+function renderComparison() {
+	if (!currentComparison) return;
+
+	const { timing, pipelineCost, runtimeTargets, platformStory } = currentComparison;
+	elements.measurementNote.textContent = currentComparison.measurementNote;
+	elements.pricingNote.textContent = currentComparison.pricingNote;
+	elements.comparisonModelLabel.textContent = `Model ${currentComparison.modelVersion} · rates ${currentComparison.asOf}`;
+	elements.queueMetric.textContent = formatMeasuredDuration(timing.queueToFirstStageMs);
+	elements.decisionMetric.textContent = formatMeasuredDuration(timing.selectedDecisionMs);
+	elements.previewMetric.textContent = formatMeasuredDuration(timing.verifiedPreviewMs);
+	elements.pipelineCostMetric.textContent = pipelineCost.toReady ? formatCostRange(pipelineCost.toReady) : "Waiting";
+	elements.pipelineCostDetail.textContent = pipelineCost.basisDurationMs
+		? `${formatDuration(pipelineCost.basisDurationMs)} resource window`
+		: "Gross overage-rate equivalent";
+	elements.previewHoldCost.textContent = formatCostRange(pipelineCost.previewHold);
+	elements.pipelineAssumptions.textContent = `${pipelineCost.assumptions.join(". ")}.`;
+
+	const timings = new Map(timing.targets.map((target) => [target.target, target]));
+	elements.comparisonRows.replaceChildren(
+		...runtimeTargets.map((runtime) => {
+			const measured = timings.get(runtime.target);
+			const row = document.createElement("tr");
+			const state = measured?.status ?? "platform";
+			row.className = `comparison-row ${state}`;
+			const measuredValue = runtime.target === "wfp" ? "Separate example" : formatStageMeasurement(measured);
+			const measuredDetail =
+				runtime.target === "wfp"
+					? "fixed-template upload measured when published"
+					: formatStageMeasurementDetail(measured);
+			const decisionValue = runtime.target === "wfp" ? "Not in ladder" : formatMeasuredDuration(measured?.cumulativeDecisionMs);
+			row.innerHTML = `
+				<th scope="row">
+					<span class="path-name">${escapeHtml(runtime.label)}</span>
+					<span class="path-state ${escapeHtml(state)}">${escapeHtml(formatStatus(state))}</span>
+				</th>
+				<td><strong>${escapeHtml(measuredValue)}</strong><small>${escapeHtml(measuredDetail)}</small></td>
+				<td><strong>${escapeHtml(decisionValue)}</strong><small>${runtime.target === "wfp" ? "platform-owned template only" : "includes earlier ladder stages"}</small></td>
+				<td><strong>${formatMoney(runtime.monthlyUsd)}</strong><small>${escapeHtml(runtime.basis)}</small><small class="cost-caveat">${escapeHtml(runtime.caveat)}</small></td>
+			`;
+			return row;
+		}),
+	);
+
+	elements.runtimeAssumptions.replaceChildren(
+		...currentComparison.runtimeAssumptions.map((assumption) => {
+			const item = document.createElement("li");
+			item.textContent = assumption;
+			return item;
+		}),
+	);
+
+	elements.platformUploadMetric.textContent = "Measured per upload";
+	elements.platformObservation.textContent = platformStory.observation;
+	const wfpCost = runtimeTargets.find((target) => target.target === "wfp");
+	if (wfpCost) elements.platformCostMetric.textContent = `${formatMoney(wfpCost.monthlyUsd)}/mo`;
+	elements.platformFlow.replaceChildren(
+		...platformStory.flow.map((step) => {
+			const item = document.createElement("li");
+			item.textContent = step;
+			return item;
+		}),
+	);
+}
+
+function renderEvents() {
+	if (events.length === 0) return;
+	const wasNearBottom =
+		elements.eventLog.scrollHeight - elements.eventLog.scrollTop - elements.eventLog.clientHeight < 70;
+	const visibleEvents = events.slice(-maxRenderedEvents);
+	const visibleSequences = new Set(visibleEvents.map((event) => event.seq));
+	for (const line of elements.eventLog.querySelectorAll("[data-event-seq]")) {
+		const sequence = Number(line.dataset.eventSeq);
+		if (!visibleSequences.has(sequence)) {
+			line.remove();
+			renderedEventSequences.delete(sequence);
+		}
+	}
+	if (renderedEventSequences.size === 0) elements.eventLog.replaceChildren();
+
+	for (const event of visibleEvents) {
+		if (renderedEventSequences.has(event.seq)) continue;
+		const line = document.createElement("div");
+		line.className = `terminal-line ${event.level}`;
+		line.dataset.eventSeq = String(event.seq);
+		line.innerHTML = `
+			<span class="terminal-time">${formatTime(event.timestamp)}</span>
+			<span class="terminal-stage">${escapeHtml(event.stage ?? "system")}</span>
+			<span class="terminal-message">${escapeHtml(event.message)}</span>
+		`;
+		const nextLine = [...elements.eventLog.querySelectorAll("[data-event-seq]")].find(
+			(candidate) => Number(candidate.dataset.eventSeq) > event.seq,
+		);
+		elements.eventLog.insertBefore(line, nextLine ?? null);
+		renderedEventSequences.add(event.seq);
+	}
+	if (wasNearBottom) elements.eventLog.scrollTop = elements.eventLog.scrollHeight;
+}
+
+function resetRunButton() {
+	if (actionPending) return;
+	elements.runButton.disabled = !demoMutationsEnabled;
+	elements.runButton.querySelector("span").textContent = demoMutationsEnabled ? "Run compatibility ladder" : "New runs paused";
+}
+
+function disconnect() {
+	if (socket) socket.close(1000, "Starting another run");
+	if (pollTimer) window.clearTimeout(pollTimer);
+	if (pollController) pollController.abort();
+	if (renderFrame !== null) window.cancelAnimationFrame(renderFrame);
+	socket = null;
+	pollTimer = null;
+	pollController = null;
+	renderFrame = null;
+}
+
+function showFatalError(error) {
+	const message = error instanceof Error ? error.message : String(error);
+	elements.connectionLabel.textContent = "Error";
+	elements.connectionDot.classList.add("error");
+	renderedEventSequences.clear();
+	elements.eventLog.innerHTML = `<p class="terminal-line error"><span class="terminal-message">${escapeHtml(message)}</span></p>`;
+}
+
+function isTerminal(status) {
+	return ["succeeded", "failed", "cancelled"].includes(status);
+}
+
+function shouldPoll(run) {
+	return Boolean(
+		run && (!isTerminal(run.status) || (run.status === "succeeded" && run.previewPath) || isCleanupPending(run)),
+	);
+}
+
+function shouldCleanupBeforeStarting(run) {
+	return Boolean(run && (run.previewPath || run.sandboxDestroyedAt === null || !isTerminal(run.status)));
+}
+
+function isCleanupPending(run) {
+	return Boolean(run && ["failed", "cancelled"].includes(run.status) && run.sandboxDestroyedAt === null);
+}
+
+function isCurrentRun(runId, generation, expectedSocket) {
+	return runGeneration === generation && currentRun?.id === runId && (expectedSocket === undefined || socket === expectedSocket);
+}
+
+function formatStatus(status) {
+	if (status === "platform") return "Example";
+	return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+function formatTarget(target) {
+	return target === "opennext" ? "OpenNext" : target === "vinext" ? "Vinext" : "a Container";
+}
+
+function formatDuration(milliseconds) {
+	if (milliseconds == null) return "";
+	return milliseconds < 1_000 ? `${milliseconds}ms` : `${(milliseconds / 1_000).toFixed(1)}s`;
+}
+
+function formatMeasuredDuration(milliseconds) {
+	return milliseconds == null ? "Not measured" : formatDuration(milliseconds);
+}
+
+function formatStageMeasurement(timing) {
+	if (!timing) return "Not measured";
+	if (timing.status === "running" || timing.status === "retrying") {
+		return "Measuring";
+	}
+	if (timing.status === "cancelled") return "Stopped";
+	if (timing.status === "skipped") return "Not measured";
+	return formatMeasuredDuration(timing.evaluationMs);
+}
+
+function formatStageMeasurementDetail(timing) {
+	if (!timing) return "Run a controlled commit to measure";
+	if ((timing.status === "running" || timing.status === "retrying") && timing.wallMs != null) {
+		return `${formatDuration(timing.wallMs)} wall elapsed · ${timing.measurementScope}`;
+	}
+	if (timing.status === "cancelled" && timing.wallMs != null) {
+		return `${formatDuration(timing.wallMs)} wall until stopped · ${timing.measurementScope}`;
+	}
+	if (timing.evaluationMs != null && timing.wallMs != null && timing.wallMs > timing.evaluationMs) {
+		return `${timing.measurementScope}; ${formatDuration(timing.wallMs)} wall including retries`;
+	}
+	return timing.measurementScope;
+}
+
+function formatMoney(value) {
+	return `$${Number(value).toFixed(2)}`;
+}
+
+function formatCostRange(range) {
+	const digits = range.upperUsd < 0.01 ? 4 : range.upperUsd < 1 ? 3 : 2;
+	return `$${range.lowerUsd.toFixed(digits)}–$${range.upperUsd.toFixed(digits)}`;
+}
+
+function formatTime(timestamp) {
+	return new Date(timestamp).toLocaleTimeString([], {
+		hour: "2-digit",
+		minute: "2-digit",
+		second: "2-digit",
+	});
+}
+
+function escapeHtml(value) {
+	return String(value)
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll('"', "&quot;")
+		.replaceAll("'", "&#039;");
+}

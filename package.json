@@ -1,0 +1,35 @@
+{
+	"name": "cloudflare-nextjs-compatibility-demo",
+	"version": "0.0.0",
+	"private": true,
+	"scripts": {
+		"check": "npm run typecheck && npm run format:check && npm run test",
+		"deploy": "wrangler deploy --config wrangler.local.jsonc --containers-rollout=immediate",
+		"dev": "wrangler dev --config wrangler.local.jsonc",
+		"start": "wrangler dev --config wrangler.local.jsonc",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"typecheck": "tsc --noEmit",
+		"format": "prettier --write .",
+		"format:check": "prettier --check .",
+		"fixtures:install": "npm ci --prefix fixtures/base",
+		"fixtures:verify": "node runner/verify-fixtures.mjs",
+		"emdash:publish": "node scripts/emdash-environment.mjs publish",
+		"emdash:delete": "node scripts/emdash-environment.mjs delete",
+		"emdash:list": "node scripts/emdash-environment.mjs list",
+		"release:check": "npm run check && npm run fixtures:verify && npm audit && npm audit --prefix fixtures/base",
+		"cf-typegen": "wrangler types"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-plugin": "1.3.1",
+		"@types/node": "^26.4.0",
+		"prettier": "^3.9.6",
+		"typescript": "^5.5.2",
+		"vitest": "~4.1.0",
+		"wrangler": "4.143.0"
+	},
+	"dependencies": {
+		"@cloudflare/sandbox": "0.13.0-next.751.1",
+		"zod": "^4.5.4"
+	}
+}
