@@ -160,7 +160,17 @@ The tracked `wrangler.jsonc` is an example, **not a live account configuration**
    npx wrangler deploy --config wrangler.local.jsonc --containers-rollout=immediate
    ```
 
-   Wrangler builds and pushes the `./Dockerfile` image when it deploys this config. In environments where Docker builds require a custom CA unavailable to Wrangler's BuildKit invocation, build locally with a BuildKit `build_ca` secret, push the image with `npx wrangler containers push`, then set only the **ignored local** config's `containers[0].image` to the returned registry digest before deploying. Keep the CA file and account-specific image name out of the repository.
+   Wrangler builds and pushes the `./Dockerfile` image when it deploys this config. If your network requires a custom CA unavailable to Wrangler's BuildKit invocation, point `NODE_EXTRA_CA_CERTS` to a local combined PEM bundle and build/push separately:
+
+   ```sh
+   docker buildx build --platform linux/amd64 --provenance=false --load \
+     --secret id=build_ca,src="$NODE_EXTRA_CA_CERTS" \
+     -t nextjs-compatibility-sandbox:ca-build .
+   npx wrangler containers push nextjs-compatibility-sandbox:ca-build \
+     --config wrangler.local.jsonc
+   ```
+
+   Set only the **ignored local** config's `containers[0].image` to the returned registry image before deploying. The CA is mounted only during the build; keep its file and the account-specific image name out of the repository.
 
 6. In public-demo mode, add Worker secrets interactively, never as arguments or source literals:
 

@@ -37,14 +37,9 @@ COPY --chown=rootless:rootless --from=dependencies /dependencies/node_modules ./
 COPY --chown=rootless:rootless fixtures ./fixtures
 COPY --chown=rootless:rootless runner ./runner
 
-RUN --mount=type=secret,id=build_ca,required=false \
-	--mount=type=tmpfs,target=/tmp/build-ca \
-	if [ -f /run/secrets/build_ca ]; then \
-		cat /etc/ssl/cert.pem /run/secrets/build_ca > /tmp/build-ca/certs.pem && \
-		SSL_CERT_FILE=/tmp/build-ca/certs.pem apk add --no-cache python3; \
-	else \
-		apk add --no-cache python3; \
-	fi && \
+# apk reads the system trust bundle; mount an optional build-only CA there for inspected networks.
+RUN --mount=type=secret,id=build_ca,target=/etc/ssl/cert.pem,required=false \
+	apk add --no-cache python3 && \
 	ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
 	ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
 	mkdir -p /workspace && \

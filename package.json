@@ -31,5 +31,8 @@
 	"dependencies": {
 		"@cloudflare/sandbox": "0.13.0-next.751.1",
 		"zod": "^4.5.4"
+	},
+	"overrides": {
+		"undici": "7.29.1"
 	}
 }
