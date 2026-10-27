@@ -223,6 +223,26 @@ Requests and previews have additional per-session/IP/global throttles; exhaustio
 
 See `src/comparison.ts` and `src/costs.ts` for the models and the source links returned by the API. Recheck [Workers](https://developers.cloudflare.com/workers/platform/pricing/), [Containers](https://developers.cloudflare.com/containers/platform/pricing/), and [Workers for Platforms](https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/reference/pricing/) pricing before using any estimates in planning.
 
+## Stateless discovery and known-run admission
+
+In public-demo mode, GET/HEAD `/`, `/api/fixtures`, `/api/session`, `/robots.txt`, and `/sitemap.xml` are cacheable, stateless discovery. They do not issue cookies or call a Durable Object. GET `/api/session` describes policy only. The browser establishes the mode before actions and bootstraps only public-demo visitors; Access installations bypass anonymous session creation. The browser and CLI create a visitor only during explicit interaction through same-origin JSON **POST `/api/session`**, with a 4096-byte streamed input bound, a ten-second absolute read deadline, and the existing session issuance budgets. A small pre-body allowance (10 requests/IP/minute, 60 globally/minute) also charges malformed or stalled bootstrap attempts. Uncooperative stream cancellation cannot extend the deadline.
+
+Before snapshots, events, WebSockets, previews, or cancellation dispatch to `RUNS`, the shared coordinator verifies a server-minted ID and owner in `run_access`. The run object still verifies ownership as defense in depth. Constructor SQL creates/backfills this table from currently retained `demo_runs`; no new namespace or Wrangler migration is required. Demo registry entries last three hours; stable Access identities retain seven-day registry entries. Old Access runs and demo records already removed before this change cannot be safely backfilled from arbitrary request IDs and are denied; drain active legacy work or provide an independently verified owner inventory during rollout.
+
+Global admission remains **3 active / 10 new runs per rolling hour / 30 per rolling day**, with existing session/IP limits and conservative teardown. Workers for Platforms fixed-template budgets and mutation gates remain independently enforced. `PUBLISHING_ENABLED=false` does not by itself pause every WfP operation.
+
+The home HTML has a canonical and description. Real robots/sitemap responses exclude run, preview, upload, and customer-environment paths and declare `Content-Signal: search=yes,ai-input=yes,ai-train=no`. Cloudflare resource anchors carry app-garden UTM attribution; other query parameters/fragments and code examples are preserved. Robots are not authorization, and old Version URLs retain their previous code.
+
+Credential-isolated local validation, using the sanitized checked-in config:
+
+```bash
+NODE_OPTIONS=--require=./scripts/offline-check.cjs npm run cf-typegen
+NODE_OPTIONS=--require=./scripts/offline-check.cjs npm run check
+NODE_OPTIONS=--require=./scripts/offline-check.cjs npx --no-install wrangler deploy --dry-run --config wrangler.jsonc
+```
+
+The preload excludes credentials but is not a network sandbox. After separately reviewing the ignored production config and rollout prerequisites, the existing `npm run deploy` uses `wrangler.local.jsonc`; never generate committed types from that file.
+
 ## Project structure
 
 ```text

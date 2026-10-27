@@ -4,3 +4,6 @@ public/app.client
 worker-configuration.d.ts
 fixtures/base/package-lock.json
 .vscode/settings.json
+wrangler.local.jsonc
+.dev.vars*
+.env*

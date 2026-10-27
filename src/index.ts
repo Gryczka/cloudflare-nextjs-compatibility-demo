@@ -11,7 +11,8 @@ import { buildRunComparison } from './comparison';
 import { createInitialRun, publicRunSnapshot, type RunEventInput } from './domain';
 import { EnvironmentRegistry, type RegistryRejection } from './environment-registry';
 import { fixtures, getFixture } from './fixtures';
-import { authenticateDemo, coordinator, DEMO_LIMITS, isPublicDemo, PublicDemoCoordinator, rejected } from './public-demo';
+import { admitSessionBody, authenticateDemo, coordinator, DEMO_LIMITS, isPublicDemo, PublicDemoCoordinator, rejected } from './public-demo';
+import { discovery, resourceAnchors } from './garden';
 import { RunDurableObject } from './run-durable-object';
 import { destroyRunSandbox, isPreviewProcessRunning, proxyPreview } from './sandbox-runner';
 import { SiteRegistry } from './site-registry';
@@ -59,13 +60,40 @@ const createRunSchema = z.object({ fixtureId: z.enum(['vinext', 'opennext', 'con
 const runIdSchema = z.uuid();
 
 /** Authenticate before routing every stateful request; public-demo bootstrap is
- * limited to the app shell and explicit session endpoint.
+ * limited to the explicit session endpoint; discovery is stateless.
  */
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext) {
 		const requestId = crypto.randomUUID();
 		try {
 			const pathname = new URL(request.url).pathname;
+			if (request.method === 'GET' || request.method === 'HEAD') {
+				const discovered = discovery(pathname);
+				if (discovered) return request.method === 'HEAD' ? new Response(null, discovered) : discovered;
+				if (isPublicDemo(env)) {
+					if (pathname === '/')
+						return publicResponse(text(resourceAnchors(indexHtml), 'text/html; charset=utf-8', securityHeaders()), request);
+					if (pathname === '/api/fixtures') return publicResponse(json({ fixtures, comparison: buildRunComparison(null) }), request);
+					if (pathname === '/api/session')
+						return publicResponse(
+							json({
+								mode: 'public-demo',
+								visitor: 'anonymous',
+								limits: DEMO_LIMITS,
+								mutationsEnabled: demoMutationsEnabled(env),
+								publishingAvailable: demoMutationsEnabled(env) && Boolean(env.WFP_API_TOKEN),
+							}),
+							request,
+						);
+				}
+			}
+			if (isPublicDemo(env) && request.method === 'POST' && pathname === '/api/session') {
+				const invalid = validateJsonMutation(request, env, 'session creation');
+				if (invalid) return invalid;
+				const denied = await admitSessionBody(request, env);
+				if (denied) return denied;
+				await readJson(request, 4_096);
+			}
 			if (isPublicDemo(env) && request.method === 'GET') {
 				if (pathname === '/health') return json({ ok: true });
 				if (pathname === '/styles.css') return text(styles, 'text/css; charset=utf-8');
@@ -109,7 +137,7 @@ async function routeRequest(request: Request, env: Env, auth: AuthenticatedPrinc
 	const url = new URL(request.url);
 	const segments = url.pathname.split('/').filter(Boolean);
 	if (request.method === 'GET' && url.pathname === '/') {
-		return text(indexHtml, 'text/html; charset=utf-8', securityHeaders());
+		return text(resourceAnchors(indexHtml), 'text/html; charset=utf-8', securityHeaders());
 	}
 	if (request.method === 'GET' && url.pathname === '/styles.css') {
 		return text(styles, 'text/css; charset=utf-8');
@@ -120,7 +148,7 @@ async function routeRequest(request: Request, env: Env, auth: AuthenticatedPrinc
 	if (request.method === 'GET' && url.pathname === '/health') {
 		return json({ ok: true });
 	}
-	if (request.method === 'GET' && url.pathname === '/api/session' && isPublicDemo(env)) {
+	if (request.method === 'POST' && url.pathname === '/api/session' && isPublicDemo(env)) {
 		return json({
 			mode: 'public-demo',
 			visitor: 'anonymous',
@@ -424,6 +452,8 @@ async function createRun(request: Request, env: Env, auth: AuthenticatedPrincipa
 	if (isPublicDemo(env)) {
 		const decision = await coordinator(env).reserveRun(runId, auth.id, auth.ipHash ?? '', fixture.id);
 		if (!decision.ok) return rejected(decision);
+	} else {
+		await coordinator(env).registerRunAccess(runId, auth.id);
 	}
 	const now = new Date().toISOString();
 	const stub = env.RUNS.getByName(runId);
@@ -505,6 +535,7 @@ async function handleRunRequest(
 	runId: string,
 	rest: string[],
 ): Promise<Response> {
+	if (!(await coordinator(env).ownsKnownRun(runId, auth.id))) return json({ error: 'Run not found' }, { status: 404 });
 	const stub = env.RUNS.getByName(runId);
 	const snapshot = await stub.getSnapshot();
 	if (!snapshot || snapshot.ownerPrincipalId !== auth.id) return json({ error: 'Run not found' }, { status: 404 });
@@ -671,7 +702,7 @@ function identityField(identity: CloudflareAccessIdentity, name: string): string
 	return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-async function readJson(request: Request, limit: number): Promise<unknown> {
+export async function readJson(request: Request, limit: number): Promise<unknown> {
 	const contentLength = Number(request.headers.get('Content-Length') ?? 0);
 	if (contentLength > limit) throw new HttpError('Request body is too large', 413);
 	if (!request.body) return null;
@@ -679,15 +710,25 @@ async function readJson(request: Request, limit: number): Promise<unknown> {
 	const reader = request.body.getReader();
 	const chunks: Uint8Array[] = [];
 	let length = 0;
-	while (true) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		length += value.byteLength;
-		if (length > limit) {
-			await reader.cancel('Request body is too large');
-			throw new HttpError('Request body is too large', 413);
+	let timer: ReturnType<typeof setTimeout>;
+	const timeout = new Promise<never>((_, reject) => {
+		timer = setTimeout(() => reject(new HttpError('Request body deadline exceeded', 408)), 10_000);
+	});
+	try {
+		while (true) {
+			const { done, value } = await Promise.race([reader.read(), timeout]);
+			if (done) break;
+			length += value.byteLength;
+			if (length > limit) throw new HttpError('Request body is too large', 413);
+			chunks.push(value);
 		}
-		chunks.push(value);
+	} catch (error) {
+		// Cancellation is best effort; an uncooperative source cannot extend the deadline.
+		void reader.cancel(error).catch(() => {});
+		throw error;
+	} finally {
+		clearTimeout(timer!);
+		reader.releaseLock();
 	}
 
 	const bytes = new Uint8Array(length);
@@ -717,6 +758,11 @@ function json(data: unknown, init: ResponseInit = {}) {
 	headers.set('Content-Type', 'application/json; charset=utf-8');
 	headers.set('Cache-Control', 'no-store');
 	return Response.json(data, { ...init, headers });
+}
+
+function publicResponse(response: Response, request: Request): Response {
+	response.headers.set('Cache-Control', 'public, max-age=30, s-maxage=300');
+	return request.method === 'HEAD' ? new Response(null, response) : response;
 }
 
 function text(body: string, contentType: string, extraHeaders?: HeadersInit) {

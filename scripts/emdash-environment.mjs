@@ -93,7 +93,12 @@ async function visitorSession(origin) {
 	} catch (error) {
 		if (error?.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
 	}
-	const response = await fetch(new URL('/api/session', origin), { signal: AbortSignal.timeout(30_000) });
+	const response = await fetch(new URL('/api/session', origin), {
+		method: 'POST',
+		headers: { Origin: origin, 'Content-Type': 'application/json' },
+		body: '{}',
+		signal: AbortSignal.timeout(30_000),
+	});
 	const body = await response.json().catch(() => null);
 	if (!response.ok || body?.mode !== 'public-demo') {
 		throw new Error(`${body?.error ?? 'Demo session unavailable'}. For an Access-protected installation, set COMPATIBILITY_AUTH=access.`);

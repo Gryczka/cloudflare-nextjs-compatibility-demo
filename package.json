@@ -7,7 +7,7 @@
 		"deploy": "wrangler deploy --config wrangler.local.jsonc --containers-rollout=immediate",
 		"dev": "wrangler dev --config wrangler.local.jsonc",
 		"start": "wrangler dev --config wrangler.local.jsonc",
-		"test": "vitest run",
+		"test": "vitest run && node --test scripts/app-client.check.mjs",
 		"test:watch": "vitest",
 		"typecheck": "tsc --noEmit",
 		"format": "prettier --write .",

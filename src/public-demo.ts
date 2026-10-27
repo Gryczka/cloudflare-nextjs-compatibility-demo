@@ -72,7 +72,7 @@ type Meter = 'session_issues' | 'request_events' | 'run_issues' | 'publish_issue
 type Scope = 'owner_id' | 'ip_hash' | null;
 
 /** Resolve a visitor exclusively from a random HttpOnly session cookie. Bootstrap is
- * restricted to safe navigations or the explicit CLI session endpoint.
+ * restricted to explicit same-origin POST /api/session interaction.
  * @param request - Incoming HTTP request; only its cookie and edge IP are used.
  * @param env - Worker bindings, including the server-only HMAC secret.
  * @returns Authenticated visitor or a response denying missing/limited sessions.
@@ -82,7 +82,7 @@ export async function authenticateDemo(request: Request, env: Env): Promise<Demo
 		return Response.json({ error: 'Demo sessions are not configured' }, { status: 503 });
 	}
 	const path = new URL(request.url).pathname;
-	const bootstrap = request.method === 'GET' && (path === '/' || path === '/api/session');
+	const bootstrap = request.method === 'POST' && path === '/api/session';
 	const rawToken = request.headers
 		.get('Cookie')
 		?.split(';')
@@ -91,7 +91,7 @@ export async function authenticateDemo(request: Request, env: Env): Promise<Demo
 		?.slice(SESSION_COOKIE.length + 1);
 	const existingHash = rawToken && HASH_PATTERN.test(rawToken) ? await digest(rawToken) : null;
 	if (!existingHash && !bootstrap) {
-		return Response.json({ error: 'Open the demo or GET /api/session to start a visitor session' }, { status: 401 });
+		return Response.json({ error: 'Explicit same-origin POST /api/session is required' }, { status: 401 });
 	}
 	const token = bootstrap ? randomHex(32) : null;
 	const nextHash = token ? await digest(token) : null;
@@ -114,6 +114,15 @@ export async function authenticateDemo(request: Request, env: Env): Promise<Demo
  */
 export function coordinator(env: Env) {
 	return env.DEMO_COORDINATOR.getByName('public-demo');
+}
+
+export async function admitSessionBody(request: Request, env: Env): Promise<Response | null> {
+	if (!env.DEMO_SESSION_KEY || env.DEMO_SESSION_KEY.length < 32)
+		return Response.json({ error: 'Demo sessions are not configured' }, { status: 503 });
+	const decision = await coordinator(env).admitBootstrap(
+		await hmac(env.DEMO_SESSION_KEY, request.headers.get('CF-Connecting-IP') ?? 'unknown-client'),
+	);
+	return decision.ok ? null : rejected(decision);
 }
 
 export function isPublicDemo(env: Env): boolean {
@@ -163,10 +172,14 @@ export class PublicDemoCoordinator extends DurableObject<Env> {
 		this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS session_issues (ip_hash TEXT NOT NULL, happened INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS bootstrap_reads (ip_hash TEXT NOT NULL, happened INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS request_events (owner_id TEXT NOT NULL, ip_hash TEXT NOT NULL, kind TEXT NOT NULL, happened INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS run_issues (owner_id TEXT NOT NULL, ip_hash TEXT NOT NULL, happened INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS publish_issues (owner_id TEXT NOT NULL, ip_hash TEXT NOT NULL, happened INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS demo_runs (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, fixture_id TEXT NOT NULL, deadline INTEGER NOT NULL, state TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS run_access (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, expires_at INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS run_access_expiry ON run_access(expires_at);
+    INSERT OR IGNORE INTO run_access SELECT id, owner_id, deadline + 10800000 FROM demo_runs;
       CREATE TABLE IF NOT EXISTS demo_environments (
         owner_id TEXT NOT NULL, slug TEXT NOT NULL, state TEXT NOT NULL, expires_at INTEGER NOT NULL,
         previous_expires_at INTEGER, PRIMARY KEY(owner_id, slug)
@@ -174,6 +187,25 @@ export class PublicDemoCoordinator extends DurableObject<Env> {
       CREATE INDEX IF NOT EXISTS runs_deadline ON demo_runs(deadline);
       CREATE INDEX IF NOT EXISTS environments_expiry ON demo_environments(expires_at);
     `);
+	}
+
+	/** Small pre-body allowance: malformed and stalled bootstraps consume it too. */
+	admitBootstrap(ipHash: string): Decision {
+		if (!HASH_PATTERN.test(ipHash)) return { ok: false, status: 401, error: 'Invalid client' };
+		return this.ctx.storage.transactionSync(() => {
+			const now = Date.now();
+			this.ctx.storage.sql.exec('DELETE FROM bootstrap_reads WHERE happened <= ?', now - 60_000);
+			const rows = this.ctx.storage.sql
+				.exec<{ [key: string]: SqlStorageValue; total: number; client: number }>(
+					'SELECT COUNT(*) AS total, COALESCE(SUM(ip_hash = ?), 0) AS client FROM bootstrap_reads',
+					ipHash,
+				)
+				.one();
+			if (rows.total >= 60 || rows.client >= 10)
+				return { ok: false, status: 429, error: 'Session body admission exhausted', retryAfterSeconds: 60 };
+			this.ctx.storage.sql.exec('INSERT INTO bootstrap_reads VALUES (?, ?)', ipHash, now);
+			return { ok: true };
+		});
 	}
 
 	/** Atomically issue/verify a session and meter its request.
@@ -289,6 +321,7 @@ export class PublicDemoCoordinator extends DurableObject<Env> {
 				'building',
 			);
 			this.ctx.storage.sql.exec('INSERT INTO run_issues(owner_id, ip_hash, happened) VALUES (?, ?, ?)', owner, ipHash, now);
+			this.registerRunAccess(id, owner);
 		});
 		if (decision.ok) await this.schedule();
 		return decision;
@@ -299,6 +332,27 @@ export class PublicDemoCoordinator extends DurableObject<Env> {
 			.exec<RunRow>('SELECT id, owner_id, deadline FROM demo_runs WHERE id = ? AND state != ?', id, 'cleaning')
 			.toArray()[0];
 		return Boolean(row && row.deadline > Date.now());
+	}
+
+	/** Server-minted IDs only; retained beyond resource teardown for terminal history. */
+	registerRunAccess(id: string, owner: string): void {
+		if (!/^[a-f0-9-]{36}$/.test(id) || !owner || owner.length > 256) throw new Error('Invalid run registration');
+		this.ctx.storage.sql.exec('DELETE FROM run_access WHERE expires_at <= ? AND id NOT IN (SELECT id FROM demo_runs)', Date.now());
+		const retention = owner.startsWith('demo:') ? 3 * 60 * 60_000 : 7 * 24 * 60 * 60_000;
+		this.ctx.storage.sql.exec(
+			'INSERT OR IGNORE INTO run_access(id, owner_id, expires_at) VALUES (?, ?, ?)',
+			id,
+			owner,
+			Date.now() + retention,
+		);
+	}
+
+	ownsKnownRun(id: string, owner: string): boolean {
+		return (
+			this.ctx.storage.sql
+				.exec('SELECT 1 FROM run_access WHERE id = ? AND owner_id = ? AND expires_at > ?', id, owner, Date.now())
+				.toArray().length === 1
+		);
 	}
 
 	/** Mark uncertain starts and preview failures for alarm-driven teardown.
@@ -601,6 +655,7 @@ export class PublicDemoCoordinator extends DurableObject<Env> {
 	}
 
 	private prune(now: number): void {
+		this.ctx.storage.sql.exec('DELETE FROM run_access WHERE expires_at <= ? AND id NOT IN (SELECT id FROM demo_runs)', now);
 		this.ctx.storage.sql.exec('DELETE FROM sessions WHERE expires_at <= ?', now);
 		this.ctx.storage.sql.exec('DELETE FROM session_issues WHERE happened <= ?', now - 24 * 60 * 60_000);
 		this.ctx.storage.sql.exec('DELETE FROM request_events WHERE happened <= ?', now - 60_000);

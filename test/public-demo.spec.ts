@@ -1,7 +1,7 @@
 import { env, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createInitialRun } from '../src/domain';
-import worker from '../src/index';
+import worker, { readJson } from '../src/index';
 import { coordinator, DEMO_LIMITS, PublicDemoCoordinator } from '../src/public-demo';
 import { customerKeyForPrincipal } from '../src/wfp-environments';
 
@@ -28,7 +28,7 @@ function send(url: string, init?: RequestInit, demo = demoEnv()): Promise<Respon
 }
 
 async function visitor() {
-	const home = await send('/');
+	const home = await send('/api/session', { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: '{}' });
 	expect(home.status).toBe(200);
 	const cookie = home.headers.get('Set-Cookie');
 	expect(cookie).toMatch(/^__Host-compatibility-session=[a-f0-9]{64}; HttpOnly; Secure; SameSite=Lax; Path=\/; Max-Age=7200$/);
@@ -41,9 +41,59 @@ async function visitor() {
 }
 
 describe('anonymous demo HTTP boundary', () => {
-	it('issues a secure session only on the landing page and session bootstrap, without exposing a principal', async () => {
+	it('charges malformed bootstraps before reading another body', async () => {
+		for (let index = 0; index < 10; index++) {
+			expect(
+				(await send('/api/session', { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: '{' })).status,
+			).toBe(400);
+		}
+		const denied = await send('/api/session', {
+			method: 'POST',
+			headers: { Origin: origin, 'Content-Type': 'application/json' },
+			body: new ReadableStream(),
+		});
+		expect(denied.status).toBe(429);
+	});
+
+	it('uses an absolute deadline for slow-drip bodies and never awaits stuck cancellation', async () => {
+		vi.useFakeTimers();
+		try {
+			let controller!: ReadableStreamDefaultController<Uint8Array>;
+			const cancel = vi.fn(() => new Promise<void>(() => {}));
+			const request = new Request(origin, {
+				method: 'POST',
+				body: new ReadableStream({
+					start(value) {
+						controller = value;
+					},
+					cancel,
+				}),
+			});
+			const assertion = expect(readJson(request, 4096)).rejects.toMatchObject({ status: 408 });
+			for (let index = 0; index < 4; index++) {
+				controller.enqueue(new TextEncoder().encode(' '));
+				await vi.advanceTimersByTimeAsync(2500);
+			}
+			await assertion;
+			expect(cancel).toHaveBeenCalledOnce();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('keeps discovery stateless and issues secure sessions only on explicit interaction', async () => {
 		const unauthenticated = await send('/api/fixtures');
-		expect(unauthenticated.status).toBe(401);
+		expect(unauthenticated.status).toBe(200);
+		const unused = vi.fn(() => {
+			throw new Error('Discovery must not dispatch a Durable Object');
+		});
+		for (const path of ['/', '/api/fixtures', '/api/session', '/robots.txt', '/sitemap.xml']) {
+			const response = await send(path, undefined, { ...demoEnv(), DEMO_COORDINATOR: { getByName: unused } } as unknown as Env);
+			expect(response.status).toBe(200);
+			expect(response.headers.has('Set-Cookie')).toBe(false);
+			expect(response.headers.get('Cache-Control')).toContain('public');
+		}
+		expect(unused).not.toHaveBeenCalled();
 		const first = await visitor();
 		const refresh = await send('/api/session', { headers: { Cookie: first.cookie } });
 		expect(refresh.status).toBe(200);
@@ -64,6 +114,7 @@ describe('anonymous demo HTTP boundary', () => {
 		const bob = await visitor();
 		const runId = crypto.randomUUID();
 		await env.RUNS.getByName(runId).initialize(createInitialRun(runId, 'vinext', alice.owner, 'Demo visitor', new Date().toISOString()));
+		await coordinator(demoEnv()).registerRunAccess(runId, alice.owner);
 		const path = `/api/runs/${runId}`;
 		const forged = { Cookie: bob.cookie, 'X-Compatibility-Run-Owner': alice.owner };
 		for (const suffix of ['', '/events', '/ws', '/preview/']) {
@@ -101,6 +152,7 @@ describe('anonymous demo HTTP boundary', () => {
 		expect(publishing.status).toBe(403);
 		const runId = crypto.randomUUID();
 		await env.RUNS.getByName(runId).initialize(createInitialRun(runId, 'vinext', user.owner, 'Demo visitor', new Date().toISOString()));
+		await coordinator(demoEnv()).registerRunAccess(runId, user.owner);
 		expect((await send(`/api/runs/${runId}`, { method: 'DELETE', headers: { Cookie: user.cookie } })).status).toBe(403);
 		expect(
 			(await send('/api/runs', { ...run, headers: { ...run.headers, Origin: origin } }, { ...demoEnv(), DEMO_MUTATIONS_ENABLED: 'false' }))
@@ -130,6 +182,18 @@ describe('anonymous demo HTTP boundary', () => {
 });
 
 describe('deployment-wide demo coordinator', () => {
+	it('rejects unknown and foreign IDs before touching any per-run Durable Object', async () => {
+		const user = await visitor();
+		const getByName = vi.fn(() => {
+			throw new Error('Unknown run was dispatched');
+		});
+		const response = await send(`/api/runs/${crypto.randomUUID()}`, { headers: { Cookie: user.cookie } }, {
+			...demoEnv(),
+			RUNS: { getByName },
+		} as unknown as Env);
+		expect(response.status).toBe(404);
+		expect(getByName).not.toHaveBeenCalled();
+	});
 	it('serializes concurrent capacity reservations and holds them until teardown confirms', async () => {
 		const demo = coordinator(demoEnv());
 		const runs = Array.from({ length: DEMO_LIMITS.activeRuns + 2 }, (_, index) => ({

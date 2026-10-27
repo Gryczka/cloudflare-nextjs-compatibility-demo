@@ -34,6 +34,7 @@ let environmentActionPending = false;
 let currentEnvironment = null;
 let demoMutationsEnabled = true;
 let publishingAvailable = true;
+let publicDemo = false;
 
 const elements = {
 	connectionLabel: document.querySelector("#connectionLabel"),
@@ -86,14 +87,17 @@ elements.stopButton.addEventListener("click", stopRun);
 elements.environmentForm.addEventListener("submit", deployCustomerEnvironment);
 elements.environmentDelete.addEventListener("click", removeCustomerEnvironment);
 
-loadFixtures().catch(showFatalError);
+const policyReady = loadFixtures();
+policyReady.catch(showFatalError);
 renderStages();
 renderComparison();
 
 async function loadFixtures() {
 	const session = await fetch("/api/session");
 	if (session.ok) {
-		const { limits, mutationsEnabled, publishingAvailable: canPublish } = await session.json();
+		const { mode, limits, mutationsEnabled, publishingAvailable: canPublish } = await session.json();
+		publicDemo = mode === "public-demo";
+		if (!publicDemo) throw new Error("Unknown session policy");
 		demoMutationsEnabled = mutationsEnabled === true;
 		publishingAvailable = demoMutationsEnabled && canPublish === true;
 		elements.demoLimits.textContent = `Public demo · ${limits.runsPerSessionHour} runs per visitor/hour · ${limits.activeRuns} concurrent builds · 30-minute previews · ${limits.environmentsPerSession} published environment per visitor for 30 minutes.${demoMutationsEnabled ? "" : " New runs and publications are paused."}`;
@@ -103,6 +107,8 @@ async function loadFixtures() {
 				demoMutationsEnabled ? "Publishing is unavailable until the server-side credential is configured." : "New demo publications are paused.",
 			);
 		}
+	} else if (session.status !== 404) {
+		throw new Error("Could not establish session policy");
 	}
 	const response = await fetch("/api/fixtures");
 	if (!response.ok) throw new Error("Could not load compatibility fixtures");
@@ -128,6 +134,7 @@ async function deployCustomerEnvironment(event) {
 	showEnvironmentStatus("Uploading the customer environment to the isolated dispatch namespace.");
 
 	try {
+		await ensureVisitorSession();
 		const response = await fetch("/api/wfp/environments", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -238,6 +245,7 @@ async function startRun() {
 	elements.runButton.querySelector("span").textContent = "Starting workflow…";
 
 	try {
+		await ensureVisitorSession();
 		if (shouldCleanupBeforeStarting(currentRun)) {
 			elements.runButton.querySelector("span").textContent = "Cleaning previous preview…";
 			const cleanup = await requestRunCleanup(currentRun.id);
@@ -285,6 +293,17 @@ async function startRun() {
 			if (failed) resetRunButton();
 		}
 	}
+}
+
+async function ensureVisitorSession() {
+	await policyReady;
+	if (!publicDemo) return;
+	const response = await fetch("/api/session", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: "{}",
+	});
+	if (!response.ok) throw new Error("Visitor admission is unavailable; try again later.");
 }
 
 function connectWebSocket() {
